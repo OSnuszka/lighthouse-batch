@@ -41,6 +41,14 @@ function execute(options) {
   const count = options.sites.length;
   log(`Lighthouse batch run begin for ${count} site${count > 1 ? "s" : ""}`);
 
+  const collectedMetrics = {
+    firstContentfulPaint: [],
+    largestContentfulPaint: [],
+    totalBlockingTime: [],
+    speedIndex: [],
+    cumulativeLayoutShift: [],
+  };
+
   const reports = sitesInfo(options)
     .map((site, i) => {
       if (budgetErrors.length && options.failFast) {
@@ -55,8 +63,6 @@ function execute(options) {
         customParams.indexOf("--chrome-flags=") === -1
           ? `--chrome-flags="--no-sandbox --headless --disable-gpu"`
           : "";
-      // if gen'ing (html|csv)+json reports, ext '.report.json' is added by lighthouse cli automatically,
-      // so here we try and keep the file names consistent by stripping to avoid duplication
       const outputPath =
         options.html || options.csv
           ? filePath.slice(0, -JSON_EXT.length)
@@ -94,6 +100,13 @@ function execute(options) {
         budgetErrors = budgetErrors.concat(errors);
       }
 
+      // Collect metrics for average calculation
+      collectedMetrics.firstContentfulPaint.push(summary.audits['first-contentful-paint'].numericValue);
+      collectedMetrics.largestContentfulPaint.push(summary.audits['largest-contentful-paint'].numericValue);
+      collectedMetrics.totalBlockingTime.push(summary.audits['total-blocking-time'].numericValue);
+      collectedMetrics.speedIndex.push(summary.audits['speed-index'].numericValue);
+      collectedMetrics.cumulativeLayoutShift.push(summary.audits['cumulative-layout-shift'].numericValue);
+
       return summary;
     })
     .filter((summary) => !!summary);
@@ -101,10 +114,12 @@ function execute(options) {
   console.log(`Lighthouse batch run end`);
   console.log(`Writing reports summary to ${summaryPath}`);
 
-  fs.writeFileSync(summaryPath, JSON.stringify(reports), "utf8");
+  const averages = calculateAverages(collectedMetrics, reports.length);
+
+  fs.writeFileSync(summaryPath, JSON.stringify({ reports, averages }), "utf8");
   if (options.print) {
     console.log(`Printing reports summary`);
-    console.log(JSON.stringify(reports, null, 2));
+    console.log(JSON.stringify({ reports, averages }, null, 2));
   }
 
   if (budgetErrors.length) {
@@ -115,6 +130,15 @@ function execute(options) {
     log("Exiting with code 1");
     process.exit(1);
   }
+}
+
+function calculateAverages(metrics, count) {
+  const averages = {};
+  for (const key in metrics) {
+    const total = metrics[key].reduce((acc, value) => acc + value, 0);
+    averages[key] = (total / count).toFixed(10);
+  }
+  return averages;
 }
 
 function sitesInfo(options) {
@@ -142,8 +166,6 @@ function sitesInfo(options) {
     const origName = siteName(url);
     let name = origName;
 
-    // if the same page is being tested multiple times then
-    // give each one an incremented name to avoid collisions
     let j = 1;
     while (existingNames[name]) {
       name = `${origName}_${j}`;
@@ -217,12 +239,35 @@ function updateSummary(filePath, summary, outcome, options) {
   const report = JSON.parse(fs.readFileSync(filePath));
   return {
     ...summary,
+    audits: {
+      'first-contentful-paint': {
+        displayValue: report.audits['first-contentful-paint'].displayValue,
+        numericValue: report.audits['first-contentful-paint'].numericValue
+      },
+      'largest-contentful-paint': {
+        displayValue: report.audits['largest-contentful-paint'].displayValue,
+        numericValue: report.audits['largest-contentful-paint'].numericValue
+      },
+      'total-blocking-time': {
+        displayValue: report.audits['total-blocking-time'].displayValue,
+        numericValue: report.audits['total-blocking-time'].numericValue
+      },
+      'speed-index': {
+        displayValue: report.audits['speed-index'].displayValue,
+        numericValue: report.audits['speed-index'].numericValue
+      },
+      'cumulative-layout-shift': {
+        displayValue: report.audits['cumulative-layout-shift'].displayValue,
+        numericValue: report.audits['cumulative-layout-shift'].numericValue
+      }
+    },
     ...getAverageScore(report),
   };
 }
 
 function getAverageScore(report) {
   let categories = report.reportCategories; // lighthouse v1,2
+  
   if (report.categories) {
     // lighthouse v3
     categories = Object.values(report.categories);
